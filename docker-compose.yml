@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: laravel-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: laravel
+      POSTGRES_USER: laravel
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: laravel-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: laravel-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/var/www/html
+      - composer-cache:/tmp/composer-cache
+    environment:
+      COMPOSER_CACHE_DIR: /tmp/composer-cache
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+      - mailhog
+
+  swagger-ui:
+    image: swaggerapi/swagger-ui:latest
+    container_name: laravel-swagger-ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      URL: http://localhost:8000/docs/api.json
+    depends_on:
+      - app
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAIL_PORT:-1025}:1025"
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    environment:
+      MH_STORAGE: memory
+
+volumes:
+  pgdata:
+  redisdata:
+  composer-cache:

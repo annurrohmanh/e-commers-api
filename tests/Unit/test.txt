@@ -1,0 +1,131 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Models\User;
+use App\Services\PasswordResetService;
+use Illuminate\Contracts\Redis\Factory as RedisFactory;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Validation\ValidationException;
+use Mockery;
+use Tests\TestCase;
+
+class PasswordResetServiceTest extends TestCase
+{
+    private $redisMock;
+    private $connectionMock;
+    private PasswordResetService $service;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Mock connection
+        $this->connectionMock = Mockery::mock();
+
+        // Mock RedisFactory
+        $this->redisMock = Mockery::mock(RedisFactory::class);
+        $this->redisMock
+            ->shouldReceive('connection')
+            ->with('default')
+            ->andReturn($this->connectionMock);
+
+        $this->service = new PasswordResetService($this->redisMock);
+    }
+
+    /** @test */
+    public function it_sends_reset_link_and_stores_token_in_redis(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create(['email' => 'user@example.com']);
+
+        $this->connectionMock->shouldReceive('del')->once();
+        $this->connectionMock->shouldReceive('setex')->once();
+
+        $this->service->sendResetLink('user@example.com');
+
+        Notification::assertSentTo($user, \App\Notifications\ResetPasswordNotification::class);
+    }
+
+    /** @test */
+    public function it_throws_exception_if_email_not_found(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        $this->service->sendResetLink('notfound@example.com');
+    }
+
+    /** @test */
+    public function it_resets_password_with_valid_token(): void
+    {
+        $user  = User::factory()->create(['email' => 'user@example.com']);
+        $token = 'plain-token-123';
+
+        $this->connectionMock
+            ->shouldReceive('get')
+            ->once()
+            ->andReturn(Hash::make($token));
+
+        $this->connectionMock
+            ->shouldReceive('del')
+            ->once();
+
+        $this->service->resetPassword([
+            'email'                 => 'user@example.com',
+            'token'                 => $token,
+            'password'              => 'newpassword123',
+            'password_confirmation' => 'newpassword123',
+        ]);
+
+        $this->assertTrue(Hash::check('newpassword123', $user->fresh()->password));
+    }
+
+    /** @test */
+    public function it_throws_exception_if_token_expired(): void
+    {
+        User::factory()->create(['email' => 'user@example.com']);
+
+        // Redis return null = token expired
+        $this->connectionMock
+            ->shouldReceive('get')
+            ->once()
+            ->andReturn(null);
+
+        $this->expectException(ValidationException::class);
+
+        $this->service->resetPassword([
+            'email'                 => 'user@example.com',
+            'token'                 => 'expired-token',
+            'password'              => 'newpassword123',
+            'password_confirmation' => 'newpassword123',
+        ]);
+    }
+
+    /** @test */
+    public function it_throws_exception_if_token_invalid(): void
+    {
+        User::factory()->create(['email' => 'user@example.com']);
+
+        $this->connectionMock
+            ->shouldReceive('get')
+            ->once()
+            ->andReturn(Hash::make('correct-token'));
+
+        $this->expectException(ValidationException::class);
+
+        $this->service->resetPassword([
+            'email'                 => 'user@example.com',
+            'token'                 => 'wrong-token',
+            'password'              => 'newpassword123',
+            'password_confirmation' => 'newpassword123',
+        ]);
+    }
+
+    protected function tearDown(): void
+    {
+        Mockery::close();
+        parent::tearDown();
+    }
+}
